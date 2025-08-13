@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { font-family: 'Inter', system-ui, sans-serif; }
+
+/* Theme variables (light & dark) */
+/* Theme variables (light & dark) */
+:root{
+  --primary:#ac94d8;
+  --bg:#f7f7fb;
+  --card:#ffffff;
+  --ink:#1a1528;
+}
+
+:root[data-theme="dark"]{
+  --bg:#0c0c13;
+  --card:#141421;
+  --ink:#ece9f6;
+}
+
+/* Base */
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* Text helpers (gunakan ini, hindari hex langsung) */
+.text-ink{ color: var(--ink); }
+/* variasi transparansi (escape "/" di selector) */
+.text-ink\/70{ color: color-mix(in oklab, var(--ink) 70%, transparent); }
+.text-ink\/60{ color: color-mix(in oklab, var(--ink) 60%, transparent); }
+.text-ink\/40{ color: color-mix(in oklab, var(--ink) 40%, transparent); }
+.text-ink\/30{ color: color-mix(in oklab, var(--ink) 30%, transparent); }
+
+.bg-primary{ background-color: var(--primary); }
+.text-primary{ color: var(--primary); }
+
+/* Soft surface & border (pengganti bg-black/5, border-black/10, divide-black/5) */
+.bg-soft{ background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.border-soft{ border-color: color-mix(in oklab, var(--ink) 12%, transparent); }
+
+/* divide-soft: mirip tailwind divide-*, tapi pakai warna tema */
+.divide-soft > :not([hidden]) ~ :not([hidden]){
+  --_c: color-mix(in oklab, var(--ink) 12%, transparent);
+  border-top: 1px solid var(--_c);
+}
+
+/* Card background helper */
+.bg-card{ background: var(--card); }
+
+
