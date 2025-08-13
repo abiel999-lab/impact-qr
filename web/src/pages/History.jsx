@@ -5,6 +5,16 @@ import { GhostBtn } from "../ui/Button";
 
 const API = (import.meta.env.VITE_API_BASE || "http://localhost:3001").replace(/\/$/, "");
 
+async function tokenExists(API, id) {
+  try {
+    const { data } = await fetch(`${API}/api/exists/${id}`).then(r => r.json());
+    return !!data.ok;
+  } catch {
+    return false;
+  }
+}
+
+
 /* helpers */
 function formatBytes(bytes = 0, decimals = 1) {
   if (!+bytes) return "0 B";
@@ -127,7 +137,15 @@ export default function History() {
     }
   };
 
-  const showQR = (it) => {
+  const showQR = async (it) => {
+    if (!(await tokenExists(API, it.id))) {
+      // auto-hapus item invalid
+      const next = items.filter(x => x.id !== it.id);
+      saveHistory(next);
+      syncRecent((rec) => rec.filter(r => r.id !== it.id));
+      alert("Link sudah tidak berlaku dan dihapus dari daftar.");
+      return;
+    }
     setResult({
       id: it.id,
       link: `${API}${it.url}`,
@@ -137,6 +155,7 @@ export default function History() {
       createdAt: it.ts,
     });
   };
+
 
   const copyText = async (t, id) => {
     try {
@@ -149,6 +168,37 @@ export default function History() {
   };
 
   const hasResult = useMemo(() => !!result, [result]);
+
+  const pruneHistory = async () => {
+    if (!items.length) return;
+    const okPairs = await Promise.all(items.map(async (it) => [it.id, await tokenExists(API, it.id)]));
+    const okMap = new Map(okPairs);
+    const next = items.filter(it => okMap.get(it.id));
+    if (next.length !== items.length) {
+      setItems(next);
+      localStorage.setItem("historyFiles", JSON.stringify(next));
+
+      // sinkronkan Recent juga
+      const rec = JSON.parse(localStorage.getItem("recentFiles") || "[]")
+                    .filter(r => okMap.get(r.id));
+      localStorage.setItem("recentFiles", JSON.stringify(rec));
+      window.dispatchEvent(new Event("recent-updated"));
+    }
+  };
+
+  // jalankan saat halaman dibuka & saat kembali fokus
+  useEffect(() => { pruneHistory(); }, []); // on mount
+  useEffect(() => {
+    const onFocus = () => pruneHistory();
+    const onVisible = () => document.visibilityState === "visible" && pruneHistory();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [items]);
+
 
   return (
     <div className="grid gap-6">

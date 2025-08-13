@@ -45,6 +45,15 @@ function useInterval(callback, delay) {
 }
 /* -------------------------------- */
 
+async function tokenExists(API, id) {
+  try {
+    const { data } = await axios.get(`${API}/api/exists/${id}`);
+    return !!data.ok;
+  } catch {
+    return false;
+  }
+}
+
 export default function Dashboard() {
   // ⬇️ berubah: dukung banyak file
   const [files, setFiles] = useState([]);        // File[] yang dipilih
@@ -196,12 +205,20 @@ export default function Dashboard() {
     try {
       const { data } = await axios.get(`${API}/api/exists/${it.id}`);
       if (!data.ok) {
-        const updated = recent.map((r) => (r.id === it.id ? { ...r, expired: true } : r));
-        saveRecent(updated);
-        setErr("Link sudah expired / tidak lagi tersedia.");
-        toast("Link expired", "error");
+        // hapus dari recent
+        const updatedRecent = recent.filter((r) => r.id !== it.id);
+        saveRecent(updatedRecent);
+
+        // hapus juga dari history
+        const all = JSON.parse(localStorage.getItem("historyFiles") || "[]")
+                      .filter((r) => r.id !== it.id);
+        localStorage.setItem("historyFiles", JSON.stringify(all));
+
+        setErr("Link sudah expired / sudah dibersihkan.");
+        toast("Link expired — dihapus dari daftar", "error");
         return;
       }
+
     } catch {
       setErr("Gagal memeriksa status link.");
       return;
@@ -240,6 +257,42 @@ export default function Dashboard() {
 
   // hapus file dari daftar pilihan (sebelum upload)
   const removeChosen = (idx) => setFiles((list) => list.filter((_,i)=>i!==idx));
+
+  const pruneLocalLists = useCallback(async () => {
+    // ambil kedua list dari localStorage
+    const rf = JSON.parse(localStorage.getItem("recentFiles") || "[]");
+    const hf = JSON.parse(localStorage.getItem("historyFiles") || "[]");
+
+    // cek semua id unik ke server
+    const ids = [...new Set([...rf, ...hf].map(x => x.id))];
+    const okPairs = await Promise.all(ids.map(async (id) => [id, await tokenExists(API, id)]));
+    const okMap = new Map(okPairs);
+
+    // filter yang masih valid
+    const rfNext = rf.filter(x => okMap.get(x.id));
+    const hfNext = hf.filter(x => okMap.get(x.id));
+
+    // simpan balik & sync UI
+    localStorage.setItem("recentFiles", JSON.stringify(rfNext));
+    localStorage.setItem("historyFiles", JSON.stringify(hfNext));
+    setRecent(rfNext);
+    window.dispatchEvent(new Event("recent-updated"));
+  }, []);
+
+  // masih di dalam Dashboard(), tambahkan efek berikut:
+  useEffect(() => { pruneLocalLists(); }, [pruneLocalLists]);
+
+  useEffect(() => {
+    const onFocus = () => pruneLocalLists();
+    const onVisible = () => document.visibilityState === "visible" && pruneLocalLists();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [pruneLocalLists]);
+
 
   return (
     <div className="grid gap-6">
