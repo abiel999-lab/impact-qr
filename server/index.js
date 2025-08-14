@@ -295,7 +295,8 @@ function renderExpiredPage({ token, downloads, maxDownloads, filename }) {
   const reason =
     maxDownloads == null
       ? 'Tautan ini sudah tidak tersedia.'
-      : \`Batas unduhan terpenuhi (\${downloads}/\${maxDownloads}).\`;
+      : 'Batas unduhan terpenuhi (' + downloads + '/' + maxDownloads + ').';
+
   return `
 <!doctype html><meta charset="utf-8">
 <title>Link expired</title>
@@ -308,6 +309,7 @@ function renderExpiredPage({ token, downloads, maxDownloads, filename }) {
   <p>Token: <code>${token}</code></p>
 </div>`;
 }
+
 function renderNotFoundPage() {
   return `
 <!doctype html><meta charset="utf-8">
