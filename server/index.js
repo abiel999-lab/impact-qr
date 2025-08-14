@@ -6,11 +6,21 @@ const multer = require('multer');
 const { v4: uuid } = require('uuid');
 
 const app = express();
-const FRONTEND = process.env.FRONTEND_ORIGIN || 'https://qrgen.studioimpactid.com';
+// ganti bagian atas index.js
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
+const allowed = FRONTEND_ORIGIN.split(",").map(s => s.trim());
+
 app.use(cors({
-  origin: [FRONTEND, 'http://localhost:5173'],
-  methods: ['GET','POST','DELETE'],
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // allow non-browser/ curl
+    if (allowed.includes("*") || allowed.includes(origin)) return cb(null, true);
+    return cb(new Error("CORS blocked"), false);
+  }
 }));
+
+// di route download, tambahkan header (aman untuk <a>)
+res.setHeader("Access-Control-Allow-Origin", allowed.includes("*") ? "*" : allowed[0]);
+
 app.use(express.json());
 
 // Multer memory storage
