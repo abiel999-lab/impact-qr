@@ -11,7 +11,18 @@ const { PassThrough } = require('stream');
 const app = express();
 app.use(express.json());
 
-// ===== CORS (perbaikan) =====
+// --- limits & TTL ---
+const MB = 1024 * 1024;
+const MAX_FILE_MB   = Number(process.env.MAX_FILE_MB   || 25);   // per file
+const MAX_TOTAL_MB  = Number(process.env.MAX_TOTAL_MB  || 50);   // total (multi)
+const MAX_FILES     = Number(process.env.MAX_FILES     || 10);   // jumlah file (multi)
+const LINK_TTL_MIN  = Number(process.env.LINK_TTL_MIN  || 60);   // menit (default 1 jam)
+const PRUNE_INTERVAL_SEC = Number(process.env.PRUNE_INTERVAL_SEC || 60);
+
+const MAX_FILE_BYTES  = MAX_FILE_MB  * MB;
+const MAX_TOTAL_BYTES = MAX_TOTAL_MB * MB;
+
+// ===== CORS =====
 const allowed = (process.env.FRONTEND_ORIGIN || '*')
   .split(',')
   .map(s => s.trim())
@@ -26,17 +37,24 @@ app.use(
     },
   })
 );
+
 // vary header untuk cache yang benar
 app.use((req, res, next) => {
   if (allowed.length) res.setHeader('Vary', 'Origin');
   next();
 });
 
-// ===== Multer: memory only =====
-const upload = multer({ storage: multer.memoryStorage() });
+// ===== Multer: memory only + limits =====
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_FILE_BYTES,
+    files: MAX_FILES
+  }
+});
 
 // ===== In-memory store =====
-// token -> { buffer, filename, size, createdAt, downloads, maxDownloads, expired, locked, password }
+// token -> { buffer, filename, size, createdAt, expiresAt, downloads, maxDownloads, expired, locked, password }
 const files = new Map();
 
 // Stats sederhana
@@ -71,6 +89,9 @@ app.get('/', (req, res) => {
   res.json({ ok: true, service: 'Impact QR API (in-memory)' });
 });
 
+// Keep-alive ping (opsional)
+app.get('/__ping', (req, res) => res.json({ ok: true }));
+
 // Upload single
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: 'No file' });
@@ -82,11 +103,13 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   }
 
   const token = uuid().slice(0, 8);
+  const now = Date.now();
   const rec = {
     buffer: req.file.buffer,
     filename: req.file.originalname,
     size: req.file.size,
-    createdAt: Date.now(),
+    createdAt: now,
+    expiresAt: now + LINK_TTL_MIN * 60 * 1000,
     downloads: 0,
     maxDownloads, // null = unlimited
     expired: false,
@@ -110,9 +133,18 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 });
 
 // Upload multi → ZIP (in-memory)
-app.post('/api/upload-multi', upload.array('files', 50), async (req, res) => {
+app.post('/api/upload-multi', upload.array('files', MAX_FILES), async (req, res) => {
   const list = req.files || [];
   if (!list.length) return res.status(400).json({ ok: false, error: 'No files' });
+
+  // validasi total size
+  const totalBytes = list.reduce((s,f)=> s + (f.size || 0), 0);
+  if (totalBytes > MAX_TOTAL_BYTES) {
+    return res.status(413).json({
+      ok: false,
+      error: `Total ukuran file melebihi ${MAX_TOTAL_MB} MB (saat ini ${(totalBytes/MB).toFixed(1)} MB).`
+    });
+  }
 
   let maxDownloads = null;
   if (req.body?.maxDownloads !== undefined && req.body.maxDownloads !== '') {
@@ -126,11 +158,13 @@ app.post('/api/upload-multi', upload.array('files', 50), async (req, res) => {
     );
 
     const token = uuid().slice(0, 8);
+    const now = Date.now();
     const rec = {
       buffer: zipBuffer,
       filename: `impactqr-${token}.zip`,
       size: zipBuffer.length,
-      createdAt: Date.now(),
+      createdAt: now,
+      expiresAt: now + LINK_TTL_MIN * 60 * 1000,
       downloads: 0,
       maxDownloads,
       expired: false,
@@ -156,11 +190,15 @@ app.post('/api/upload-multi', upload.array('files', 50), async (req, res) => {
   }
 });
 
-// Download (honor limit & lock)
+// Download (honor TTL, limit & lock)
 app.get('/d/:token', (req, res) => {
   const token = req.params.token;
   const rec = files.get(token);
   if (!rec) return res.status(404).type('html').send(renderNotFoundPage());
+
+  // TTL
+  const now = Date.now();
+  if (rec.expiresAt && now > rec.expiresAt) rec.expired = true;
 
   // Locked?
   if (rec.locked) {
@@ -196,18 +234,25 @@ app.get('/d/:token', (req, res) => {
 // Exists?
 app.get('/api/exists/:token', (req, res) => {
   const rec = files.get(req.params.token);
-  const ok = !!rec && !rec.locked && !rec.expired &&
+  if (!rec) return res.json({ ok: false });
+
+  if (rec.expiresAt && Date.now() > rec.expiresAt) rec.expired = true;
+  const ok = !rec.locked && !rec.expired &&
     !(rec.maxDownloads != null && rec.downloads >= rec.maxDownloads);
+
   res.json({ ok });
 });
 
 // Simple stats
 app.get('/api/stats', (req, res) => {
   let activeLinks = 0;
+  const now = Date.now();
   for (const rec of files.values()) {
+    const expiredByTtl = rec.expiresAt && now > rec.expiresAt;
     const available =
       !rec.locked &&
       !rec.expired &&
+      !expiredByTtl &&
       !(rec.maxDownloads != null && rec.downloads >= rec.maxDownloads);
     if (available) activeLinks += 1;
   }
@@ -267,12 +312,30 @@ app.post('/api/lock/:token', (req, res) => {
   return res.json({ ok: true });
 });
 
-// ===== Auto-clear in-memory store =====
-const minutes = Number(process.env.CLEAR_INTERVAL_MINUTES || 180);
+// ===== Multer error handler (letakkan SETELAH routes di atas) =====
+app.use((err, req, res, next) => {
+  if (err && err.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ ok:false, error:`File terlalu besar. Maksimal ${MAX_FILE_MB} MB per file.` });
+    }
+    if (err.code === 'LIMIT_FILE_COUNT') {
+      return res.status(413).json({ ok:false, error:`Terlalu banyak file. Maksimal ${MAX_FILES} file.` });
+    }
+    return res.status(400).json({ ok:false, error:`Upload error: ${err.message}` });
+  }
+  next(err);
+});
+
+// ===== Auto-prune expired (BUKAN clear semua) =====
 setInterval(() => {
-  files.clear();
-  console.log('[ImpactQR] In-memory storage cleared.');
-}, Math.max(5, minutes) * 60 * 1000);
+  const now = Date.now();
+  let removed = 0;
+  for (const [k, rec] of files) {
+    const expiredByTtl = rec.expiresAt && now > rec.expiresAt;
+    if (rec.expired || expiredByTtl) { files.delete(k); removed++; }
+  }
+  if (removed) console.log(`[ImpactQR] Pruned ${removed} expired link(s).`);
+}, Math.max(10, PRUNE_INTERVAL_SEC) * 1000);
 
 // ===== Helpers (HTML & utils) =====
 function sanitize(name = '') {

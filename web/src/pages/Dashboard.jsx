@@ -1,4 +1,3 @@
-// web/src/pages/Dashboard.jsx
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { Card, CardHeader, CardBody } from "../ui/Card";
@@ -8,6 +7,11 @@ import QrBox from "../components/QrBox";
 import LogoTile from "../components/LogoTile";
 
 const API = (import.meta.env.VITE_API_BASE || "http://localhost:3001").replace(/\/$/, "");
+
+// batas client-side (selaras server)
+const MAX_FILE_MB  = Number(import.meta.env.VITE_MAX_FILE_MB  || 25);
+const MAX_TOTAL_MB = Number(import.meta.env.VITE_MAX_TOTAL_MB || 50);
+const MB = 1024 * 1024;
 
 /* ---------- helpers ---------- */
 function formatBytes(bytes = 0, decimals = 1) {
@@ -55,7 +59,7 @@ async function tokenExists(API, id) {
 }
 
 export default function Dashboard() {
-  // ⬇️ berubah: dukung banyak file
+  // ⬇️ dukung banyak file
   const [files, setFiles] = useState([]);        // File[] yang dipilih
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -71,7 +75,7 @@ export default function Dashboard() {
     setTimeout(() => setToasts((s) => s.filter((t) => t.id !== id)), 2200);
   };
 
-  // ⬇️ kontrol limit download (tetap ada)
+  // kontrol limit download
   const [limitEnabled, setLimitEnabled] = useState(false);
   const [limitValue, setLimitValue] = useState("5"); // "5" | "10" | "50" | "0"
 
@@ -119,6 +123,19 @@ export default function Dashboard() {
     const list = Array.from(e.dataTransfer.files || []);
     if (list.length) {
       setErr("");
+
+      // validasi ukuran
+      const tooBig = list.find(f => f.size > MAX_FILE_MB * MB);
+      if (tooBig) {
+        setErr(`"${tooBig.name}" melebihi ${MAX_FILE_MB} MB`);
+        return;
+      }
+      const total = list.reduce((s,f)=>s+f.size,0);
+      if (total > MAX_TOTAL_MB * MB) {
+        setErr(`Total ukuran melebihi ${MAX_TOTAL_MB} MB`);
+        return;
+      }
+
       setFiles(list);
     }
   };
@@ -126,10 +143,24 @@ export default function Dashboard() {
   // pilih file via input
   const onSelect = (fileList) => {
     setErr("");
-    setFiles(Array.from(fileList || []));
+    const arr = Array.from(fileList || []);
+
+    // validasi ukuran
+    const tooBig = arr.find(f => f.size > MAX_FILE_MB * MB);
+    if (tooBig) {
+      setErr(`"${tooBig.name}" melebihi ${MAX_FILE_MB} MB`);
+      return;
+    }
+    const total = arr.reduce((s,f)=>s+f.size,0);
+    if (total > MAX_TOTAL_MB * MB) {
+      setErr(`Total ukuran melebihi ${MAX_TOTAL_MB} MB`);
+      return;
+    }
+
+    setFiles(arr);
   };
 
-  // helper: ringkasan file terpilih
+  // ringkasan file terpilih
   const totalSize = useMemo(() => files.reduce((s,f)=>s+(f.size||0),0), [files]);
 
   const onUpload = async () => {
@@ -258,28 +289,24 @@ export default function Dashboard() {
   // hapus file dari daftar pilihan (sebelum upload)
   const removeChosen = (idx) => setFiles((list) => list.filter((_,i)=>i!==idx));
 
+  // prune list localStorage berdasarkan status server
   const pruneLocalLists = useCallback(async () => {
-    // ambil kedua list dari localStorage
     const rf = JSON.parse(localStorage.getItem("recentFiles") || "[]");
     const hf = JSON.parse(localStorage.getItem("historyFiles") || "[]");
 
-    // cek semua id unik ke server
     const ids = [...new Set([...rf, ...hf].map(x => x.id))];
     const okPairs = await Promise.all(ids.map(async (id) => [id, await tokenExists(API, id)]));
     const okMap = new Map(okPairs);
 
-    // filter yang masih valid
     const rfNext = rf.filter(x => okMap.get(x.id));
     const hfNext = hf.filter(x => okMap.get(x.id));
 
-    // simpan balik & sync UI
     localStorage.setItem("recentFiles", JSON.stringify(rfNext));
     localStorage.setItem("historyFiles", JSON.stringify(hfNext));
     setRecent(rfNext);
     window.dispatchEvent(new Event("recent-updated"));
   }, []);
 
-  // masih di dalam Dashboard(), tambahkan efek berikut:
   useEffect(() => { pruneLocalLists(); }, [pruneLocalLists]);
 
   useEffect(() => {
@@ -293,6 +320,13 @@ export default function Dashboard() {
     };
   }, [pruneLocalLists]);
 
+  // keep-alive ringan saat halaman terbuka
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetch(`${API}/__ping`).catch(() => {});
+    }, 4 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <div className="grid gap-6">
@@ -341,9 +375,9 @@ export default function Dashboard() {
       <div className="grid lg:grid-cols-3 gap-6 items-start">
         {/* Upload */}
         <Card className="lg:col-span-2">
-          <CardHeader title="Upload & Get QR" subtitle="Seret file ke area di bawah atau pilih manual." />
+          <CardHeader title="Upload & Get QR" subtitle={`Maks ${MAX_FILE_MB} MB per file, total ${MAX_TOTAL_MB} MB.`} />
           <CardBody>
-            {/* ⬇️ Kontrol limit download */}
+            {/* Kontrol limit download */}
             <div className="flex items-center gap-3 mb-3 text-sm">
               <label className="inline-flex items-center gap-2">
                 <input
