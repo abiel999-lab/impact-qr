@@ -6,7 +6,11 @@ const multer = require('multer');
 const { v4: uuid } = require('uuid');
 
 const app = express();
-app.use(cors());
+const FRONTEND = process.env.FRONTEND_ORIGIN || 'https://qrgen.studioimpactid.com';
+app.use(cors({
+  origin: [FRONTEND, 'http://localhost:5173'],
+  methods: ['GET','POST','DELETE'],
+}));
 app.use(express.json());
 
 // Multer memory storage
